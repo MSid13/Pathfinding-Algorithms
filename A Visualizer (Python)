@@ -184,7 +184,7 @@ def main(win, width):
                     started = False
                 continue
 
-            if pygame.mouse.get_pressed()[0]:  # Left click to place start and end tiles and walls
+            if pygame.mouse.get_pressed()[0]:  # left click to place start and end tiles and walls
                 pos = pygame.mouse.get_pos()
                 row = pos[1] // (width // ROWS)
                 col = pos[0] // (width // ROWS)
@@ -199,7 +199,7 @@ def main(win, width):
                     cell.is_wall = True
                     cell.color = BLACK
 
-            elif pygame.mouse.get_pressed()[2]:  # Right click to reset
+            elif pygame.mouse.get_pressed()[2]:  # right click to reset
                 pos = pygame.mouse.get_pos()
                 row = pos[1] // (width // ROWS)
                 col = pos[0] // (width // ROWS)
