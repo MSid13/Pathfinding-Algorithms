@@ -5,7 +5,7 @@ export class Pathfinder {
         this.nodesVisited = 0;
         this.distanceTraveled = 0;
     }
-    run(start, end, onStep, onFinish) {
+    async run(start, end, onStep, onFinish) {
         for (let i = 0; i < this.grid.rows; i++) {
             for (let j = 0; j < this.grid.cols; j++) {
                 const cell = this.grid.grid[i][j];
@@ -18,7 +18,7 @@ export class Pathfinder {
         
 
         start.g = 0;
-        start.f = this.heuristic(start, end);
+        start.f = await this.heuristic(start, end);
         start.color = "green";
         end.color = "red";
         const openSet = [start];
@@ -179,13 +179,12 @@ export class Pathfinder {
 let mlModel = null;
 export async function loadMLModel() {
     if (!mlModel) {
-        mlModel = await window.tf.loadGraphModel('web_model/model.json?v=' + Date.now());
+        mlModel = await window.tf.loadGraphModel('web_model_static/model.json?v=' + Date.now());
         if (mlModel && mlModel.weights && mlModel.weights.length) {
-            console.log("Loaded model weights count:", mlModel.weights.length);
+            console.log("Loaded static model weights count:", mlModel.weights.length);
         }
-        //debug
         if (mlModel && mlModel.inputs) {
-            console.log("Model input names:", mlModel.inputs.map(x => x.name));
+            console.log("Static Model input names:", mlModel.inputs.map(x => x.name));
         }
     }
     return mlModel;
@@ -193,7 +192,6 @@ export async function loadMLModel() {
 
 export async function mlHeuristic(a, b, grid) {
     await loadMLModel();
-    // prepare grid tensor: shape [1, 20, 20, 1], value 0/1
     const gridArr = [];
     for (let i = 0; i < grid.length; i++) {
         const row = [];
@@ -203,7 +201,6 @@ export async function mlHeuristic(a, b, grid) {
         gridArr.push(row);
     }
     const gridTensor = window.tf.tensor(gridArr).reshape([1, grid.length, grid[0].length, 1]);
-    // prepare start/goal tensor: shape [1, 4], normalized
     const startGoalArr = [
         a.row / (grid.length - 1),
         a.col / (grid[0].length - 1),
@@ -214,13 +211,27 @@ export async function mlHeuristic(a, b, grid) {
 
     console.log('gridTensor shape:', gridTensor.shape, 'startGoalTensor shape:', startGoalTensor.shape);
     let output;
+    let errorGuard = false;
     if (mlModel.predict) {
-        output = mlModel.predict([startGoalTensor, gridTensor]); // order must match model input order
+        output = mlModel.predict([gridTensor, startGoalTensor]);
     } else {
         const inputNames = mlModel.inputs.map(x => x.name);
-        const inputDict = {};
-        inputDict[inputNames[0]] = startGoalTensor;
-        inputDict[inputNames[1]] = gridTensor;
+        const inputDict = {
+            'start_goal': startGoalTensor,
+            'grid': gridTensor
+        };
+        // Check for missing inputs
+        if (!inputDict['grid'] || !inputDict['start_goal']) {
+            if (!errorGuard) {
+                errorGuard = true;
+                console.error('Static ML: Model input names do not match expected ("grid", "start_goal"). Names:', inputNames);
+            }
+            gridTensor.dispose();
+            startGoalTensor.dispose();
+            throw new Error('Static ML: Model input names do not match expected ("grid", "start_goal").');
+        }
+        console.log('Static ML inputNames:', inputNames);
+        console.log('Static ML inputDict mapping:', Object.fromEntries(Object.entries(inputDict).map(([k,v]) => [k, v.shape])));
         output = mlModel.execute(inputDict);
     }
     const normResidual = (await output.data())[0];
@@ -233,9 +244,7 @@ export async function mlHeuristic(a, b, grid) {
     const dy = Math.abs(a.col - b.col);
     const octile = Math.min(dx, dy) * Math.SQRT2 + Math.abs(dx - dy);
     const predictedCost = normResidual * maxCost + octile;
-    //never overestimate
     const admissibleCost = Math.min(predictedCost, octile);
-    //debug stuff
     console.log("ML residual (norm):", normResidual, "predicted cost:", predictedCost, "octile:", octile, "admissible:", admissibleCost);
     return admissibleCost;
 }
@@ -255,5 +264,79 @@ export function dijkastraHeuristic(a,b) {
 
 export function greedyHeuristic(a, b) {
     return Math.abs(a.row - b.row) + Math.abs(a.col - b.col);
+}
+
+export async function loadMLDynamicModel() {
+    if (!window.mlDynamicModel) {
+        window.mlDynamicModel = await window.tf.loadGraphModel('web_model_dynamic/model.json?v=' + Date.now());
+        if (window.mlDynamicModel && window.mlDynamicModel.inputs) {
+            console.log("Dynamic Model input names:", window.mlDynamicModel.inputs.map(x => x.name));
+        }
+    }
+    return window.mlDynamicModel;
+}
+
+export async function mlDynamicHeuristic(a, b, grid) {
+    await loadMLDynamicModel();
+    const gridArr = [];
+    const costArr = [];
+    for (let i = 0; i < grid.length; i++) {
+        const gridRow = [];
+        const costRow = [];
+        for (let j = 0; j < grid[0].length; j++) {
+            gridRow.push(grid[i][j].isWall ? 1 : 0);
+            costRow.push(grid[i][j].cost ?? 1);
+        }
+        gridArr.push(gridRow);
+        costArr.push(costRow);
+    }
+    const gridTensor = window.tf.tensor(gridArr).reshape([1, grid.length, grid[0].length, 1]);
+    const costTensor = window.tf.tensor(costArr).reshape([1, grid.length, grid[0].length, 1]);
+    const startGoalArr = [
+        a.row / (grid.length - 1),
+        a.col / (grid[0].length - 1),
+        b.row / (grid.length - 1),
+        b.col / (grid[0].length - 1)
+    ];
+    const startGoalTensor = window.tf.tensor(startGoalArr).reshape([1, 4]);
+    let output;
+    let errorGuard = false;
+    if (window.mlDynamicModel.predict) {
+        output = window.mlDynamicModel.predict([gridTensor, costTensor, startGoalTensor]);
+    } else {
+        const inputNames = window.mlDynamicModel.inputs.map(x => x.name);
+        const inputDict = {
+            'grid': gridTensor,
+            'cost': costTensor,
+            'start_goal': startGoalTensor
+        };
+        // Check for missing inputs
+        if (!inputDict['grid'] || !inputDict['cost'] || !inputDict['start_goal']) {
+            if (!errorGuard) {
+                errorGuard = true;
+                console.error('Dynamic ML: Model input names do not match expected ("grid", "cost", "start_goal"). Names:', inputNames);
+            }
+            gridTensor.dispose();
+            costTensor.dispose();
+            startGoalTensor.dispose();
+            throw new Error('Dynamic ML: Model input names do not match expected ("grid", "cost", "start_goal").');
+        }
+        console.log('Dynamic ML inputNames:', inputNames);
+        console.log('Dynamic ML inputDict mapping:', Object.fromEntries(Object.entries(inputDict).map(([k,v]) => [k, v.shape])));
+        output = window.mlDynamicModel.execute(inputDict);
+    }
+    const normResidual = (await output.data())[0];
+    gridTensor.dispose();
+    costTensor.dispose();
+    startGoalTensor.dispose();
+    output.dispose();
+    const maxCost = Math.SQRT2 * (grid.length - 1) * 3.0;
+    const dx = Math.abs(a.row - b.row);
+    const dy = Math.abs(a.col - b.col);
+    const octile = Math.min(dx, dy) * Math.SQRT2 + Math.abs(dx - dy);
+    const predictedCost = normResidual * maxCost + octile;
+    const admissibleCost = Math.min(predictedCost, octile);
+    console.log("ML-Dynamic residual (norm):", normResidual, "predicted cost:", predictedCost, "octile:", octile, "admissible:", admissibleCost);
+    return admissibleCost;
 }
 

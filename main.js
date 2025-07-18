@@ -1,5 +1,5 @@
 import { Cell } from './grid.js';
-import { AstarHeuristic, Pathfinder, dijkastraHeuristic, greedyHeuristic, mlHeuristic } from './pathfinder.js';
+import { AstarHeuristic, Pathfinder, dijkastraHeuristic, greedyHeuristic, mlHeuristic, mlDynamicHeuristic } from './pathfinder.js';
 
 
 const canvas = document.getElementById('gridCanvas');
@@ -13,7 +13,7 @@ let runHistory = [];
 let setups = JSON.parse(localStorage.getItem('simpleSetups') || '{}');
 
 
-function drawGrid() {
+function drawGrid(showCosts = false) {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
     for (let i = 0; i < ROWS; i++) {
@@ -24,23 +24,45 @@ function drawGrid() {
             ctx.strokeStyle = '#aaa';
             ctx.lineWidth = 1;
             ctx.strokeRect(j * cellSize, i * cellSize, cellSize, cellSize);
+            if (showCosts && !cell.isWall) {
+                ctx.fillStyle = 'black';
+                ctx.font = '10px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(cell.cost, j * cellSize + cellSize/2, i * cellSize + cellSize/2);
+            }
         }
     }
 }
 
-function clearGrid() { //clearing the grid to become blank
+function clearGrid(dynamic = false) { //clearing the grid to become blank
     grid = [];
     for (let i = 0; i < ROWS; i++) {
         let row = [];
         for (let j = 0; j < COLS; j++) {
-            row.push(new Cell(i, j));
+            let cell = new Cell(i, j);
+            if (dynamic) {
+                // 10% chance to be slow terrain (cost 3), 20% chance cost 2, else cost 1
+                const rand = Math.random();
+                if (rand < 0.1) {
+                    cell.cost = 3;
+                } else if (rand < 0.3) {
+                    cell.cost = 2;
+                } else {
+                    cell.cost = 1;
+                }
+            } else {
+                cell.cost = 1;
+            }
+            cell.weight = cell.cost; // ensure weight is set for pathfinder
+            row.push(cell);
         }
         grid.push(row);
     }
     start = null;
     end = null;
     runHistory = [];
-    drawGrid();
+    drawGrid(dynamic);
     updateTable();
 }
 
@@ -48,9 +70,11 @@ function clearGrid() { //clearing the grid to become blank
 function getSelectedAlgorithm() { //picking the algorithm based on the dropdown selection
     const algo = document.getElementById('algoSelect').value;
     if (algo === 'astar') return AstarHeuristic;
+    if (algo === 'astar_dynamic') return AstarHeuristic; // use same heuristic, but grid has costs
     if (algo === 'dijkstra') return () => 0;
     if (algo === 'greedy') return (a, b) => Math.abs(a.row - b.row) + Math.abs(a.col - b.col);
     if (algo === 'ml') return async (a, b) => await mlHeuristic(a, b, grid);
+    if (algo === 'ml_dynamic') return async (a, b) => await mlDynamicHeuristic(a, b, grid);
     return AstarHeuristic; //default to A* if nothing is selected
 }
 
@@ -79,13 +103,19 @@ async function runPathfinder() {
     }
 }
 
+function drawGridAuto() {
+    const algo = document.getElementById('algoSelect').value;
+    const isDynamic = grid.some(row => row.some(cell => cell.cost !== 1));
+    drawGrid((algo === 'astar_dynamic' || algo === 'ml_dynamic') && isDynamic);
+}
+
 function showPath() {
     let cell = end;
     while (cell && cell !== start) {
         if (cell !== end) cell.color = '#ff9800';
         cell = cell.parent;
     }
-    drawGrid();
+    drawGridAuto();
 }
 
 
@@ -107,7 +137,7 @@ function saveSetup() {
         return;
     }
     setups[name] = {
-        grid: grid.map(row => row.map(cell => ({ isWall: cell.isWall }))),
+        grid: grid.map(row => row.map(cell => ({ isWall: cell.isWall, cost: cell.cost }))), // save cell cost
         start: start ? { row: start.row, col: start.col } : null,
         end: end ? { row: end.row, col: end.col } : null
     };
@@ -126,6 +156,8 @@ function loadSetup() {
         for (let j = 0; j < COLS; j++) {
             let cell = new Cell(i, j);
             cell.isWall = setup.grid[i][j].isWall;
+            cell.cost = setup.grid[i][j].cost !== undefined ? setup.grid[i][j].cost : 1;
+            cell.weight = cell.cost;
             cell.color = cell.isWall ? 'black' : 'white';
             row.push(cell);
         }
@@ -136,7 +168,7 @@ function loadSetup() {
     if (start) start.color = 'green';
     if (end) end.color = 'red';
     runHistory = [];
-    drawGrid();
+    drawGridAuto();
     updateTable();
 }
 
@@ -195,7 +227,7 @@ function handleMouse(e, isClick = false) {
             cell.isWall = false; cell.color = 'white';
         }
     }
-    drawGrid();
+    drawGridAuto();
 }
 
 canvas.addEventListener('mousedown', e => {
@@ -236,9 +268,38 @@ canvas.addEventListener('mouseleave', () => {
 window.addEventListener('DOMContentLoaded', () => {
     clearGrid();
     updateSetupDropdown();
-    document.getElementById('clearBtn').onclick = clearGrid;
+    document.getElementById('clearBtn').onclick = () => clearGrid();
+    document.getElementById('clearDynamicBtn').onclick = () => clearGrid(true); // new button for dynamic grid
     document.getElementById('startBtn').onclick = runPathfinder;
     document.getElementById('saveBtn').onclick = saveSetup;
     document.getElementById('loadBtn').onclick = loadSetup;
     document.getElementById('exportBtn').onclick = exportToExcel;
+    // Add ML-Dynamic and A*-Dynamic to algorithm dropdown
+    const algoSelect = document.getElementById('algoSelect');
+    if (!Array.from(algoSelect.options).some(opt => opt.value === 'ml_dynamic')) {
+        const opt = document.createElement('option');
+        opt.value = 'ml_dynamic';
+        opt.textContent = 'ML-Dynamic';
+        algoSelect.appendChild(opt);
+    }
+    if (!Array.from(algoSelect.options).some(opt => opt.value === 'astar_dynamic')) {
+        const opt = document.createElement('option');
+        opt.value = 'astar_dynamic';
+        opt.textContent = 'A*-Dynamic';
+        algoSelect.appendChild(opt);
+    }
+    document.getElementById('algoSelect').onchange = function() {
+        const algo = this.value;
+        if (algo === 'astar_dynamic' || algo === 'ml_dynamic') {
+            // Show costs if grid is dynamic
+            const isDynamic = grid.some(row => row.some(cell => cell.cost !== 1));
+            drawGrid(isDynamic);
+            if (!isDynamic) {
+                alert('Grid is not dynamic! Press "Clear Dynamic Grid" to generate a dynamic environment.');
+            }
+        } else if (algo === 'astar' || algo === 'ml' || algo === 'dijkstra' || algo === 'greedy') {
+            // Hide costs, but keep grid as-is
+            drawGrid(false);
+        }
+    };
 });
