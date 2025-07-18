@@ -1,6 +1,18 @@
 import { Cell } from './grid.js';
 import { AstarHeuristic, Pathfinder, dijkastraHeuristic, greedyHeuristic, mlHeuristic, mlDynamicHeuristic } from './pathfinder.js';
 
+// Configure TensorFlow.js to use CPU backend to avoid WebGL issues
+async function initializeTensorFlow() {
+    try {
+        await window.tf.setBackend('cpu');
+        console.log('TensorFlow.js backend set to CPU');
+    } catch (error) {
+        console.warn('Failed to set TensorFlow.js backend to CPU:', error);
+    }
+}
+
+// Initialize TensorFlow.js when the page loads
+initializeTensorFlow();
 
 const canvas = document.getElementById('gridCanvas');
 const ROWS = 20, COLS = 20;

@@ -179,6 +179,9 @@ export class Pathfinder {
 let mlModel = null;
 export async function loadMLModel() {
     if (!mlModel) {
+        // Ensure TensorFlow.js is ready with CPU backend
+        await window.tf.ready();
+        
         mlModel = await window.tf.loadGraphModel('web_model_static/model.json?v=' + Date.now());
         if (mlModel && mlModel.weights && mlModel.weights.length) {
             console.log("Loaded static model weights count:", mlModel.weights.length);
@@ -213,25 +216,52 @@ export async function mlHeuristic(a, b, grid) {
     let output;
     let errorGuard = false;
     if (mlModel.predict) {
-        output = mlModel.predict([gridTensor, startGoalTensor]);
+        // Model expects inputs in order: [start_goal, grid] based on signature
+        output = mlModel.predict([startGoalTensor, gridTensor]);
     } else {
         const inputNames = mlModel.inputs.map(x => x.name);
-        const inputDict = {
-            'start_goal': startGoalTensor,
-            'grid': gridTensor
-        };
+        
+        console.log('DEBUG: Model input names:', inputNames);
+        console.log('DEBUG: gridTensor shape:', gridTensor.shape);
+        console.log('DEBUG: startGoalTensor shape:', startGoalTensor.shape);
+        
+        // Try using the internal names from the model inputs array
+        const inputDict = {};
+        inputNames.forEach(name => {
+            if (name === 'start_goal' || name === 'start_goal:0') {
+                inputDict[name] = startGoalTensor;
+                console.log(`DEBUG: Mapped ${name} to startGoalTensor with shape:`, startGoalTensor.shape);
+            } else if (name === 'grid' || name === 'grid:0') {
+                inputDict[name] = gridTensor;
+                console.log(`DEBUG: Mapped ${name} to gridTensor with shape:`, gridTensor.shape);
+            }
+        });
+        
+        console.log('DEBUG: Final inputDict keys:', Object.keys(inputDict));
+        console.log('DEBUG: Final inputDict shapes:', Object.fromEntries(Object.entries(inputDict).map(([k,v]) => [k, v.shape])));
+        
+        // Double-check the tensor assignment
+        if (inputDict['start_goal'] && inputDict['start_goal'].shape.toString() !== '1,4') {
+            console.error('ERROR: start_goal tensor has wrong shape!', inputDict['start_goal'].shape);
+        }
+        if (inputDict['grid'] && inputDict['grid'].shape.toString() !== '1,20,20,1') {
+            console.error('ERROR: grid tensor has wrong shape!', inputDict['grid'].shape);
+        }
+        
         // Check for missing inputs
-        if (!inputDict['grid'] || !inputDict['start_goal']) {
+        if (Object.keys(inputDict).length !== inputNames.length) {
             if (!errorGuard) {
                 errorGuard = true;
-                console.error('Static ML: Model input names do not match expected ("grid", "start_goal"). Names:', inputNames);
+                console.error('Static ML: Could not map all inputs. Expected names:', inputNames);
             }
             gridTensor.dispose();
             startGoalTensor.dispose();
-            throw new Error('Static ML: Model input names do not match expected ("grid", "start_goal").');
+            throw new Error('Static ML: Could not map all model inputs.');
         }
         console.log('Static ML inputNames:', inputNames);
         console.log('Static ML inputDict mapping:', Object.fromEntries(Object.entries(inputDict).map(([k,v]) => [k, v.shape])));
+        
+        console.log('DEBUG: About to call mlModel.execute with inputDict');
         output = mlModel.execute(inputDict);
     }
     const normResidual = (await output.data())[0];
@@ -268,6 +298,9 @@ export function greedyHeuristic(a, b) {
 
 export async function loadMLDynamicModel() {
     if (!window.mlDynamicModel) {
+        // Ensure TensorFlow.js is ready with CPU backend
+        await window.tf.ready();
+        
         window.mlDynamicModel = await window.tf.loadGraphModel('web_model_dynamic/model.json?v=' + Date.now());
         if (window.mlDynamicModel && window.mlDynamicModel.inputs) {
             console.log("Dynamic Model input names:", window.mlDynamicModel.inputs.map(x => x.name));
@@ -302,24 +335,31 @@ export async function mlDynamicHeuristic(a, b, grid) {
     let output;
     let errorGuard = false;
     if (window.mlDynamicModel.predict) {
-        output = window.mlDynamicModel.predict([gridTensor, costTensor, startGoalTensor]);
+        // Model expects inputs in order: [start_goal, grid:0, cost:0] based on signature
+        output = window.mlDynamicModel.predict([startGoalTensor, gridTensor, costTensor]);
     } else {
         const inputNames = window.mlDynamicModel.inputs.map(x => x.name);
+        
+        // Use signature input names - the dynamic model has inconsistent naming:
+        // "start_goal" (no :0), "grid:0" (with :0), "cost:0" (with :0)
         const inputDict = {
-            'grid': gridTensor,
-            'cost': costTensor,
-            'start_goal': startGoalTensor
+            'start_goal': startGoalTensor,
+            'grid:0': gridTensor,
+            'cost:0': costTensor
         };
+        
         // Check for missing inputs
-        if (!inputDict['grid'] || !inputDict['cost'] || !inputDict['start_goal']) {
+        const expectedKeys = ['start_goal', 'grid:0', 'cost:0'];
+        const missingInputs = expectedKeys.filter(key => !inputDict[key]);
+        if (missingInputs.length > 0) {
             if (!errorGuard) {
                 errorGuard = true;
-                console.error('Dynamic ML: Model input names do not match expected ("grid", "cost", "start_goal"). Names:', inputNames);
+                console.error('Dynamic ML: Missing inputs:', missingInputs, 'Actual input names from model:', inputNames);
             }
             gridTensor.dispose();
             costTensor.dispose();
             startGoalTensor.dispose();
-            throw new Error('Dynamic ML: Model input names do not match expected ("grid", "cost", "start_goal").');
+            throw new Error('Dynamic ML: Missing required inputs: ' + missingInputs.join(', '));
         }
         console.log('Dynamic ML inputNames:', inputNames);
         console.log('Dynamic ML inputDict mapping:', Object.fromEntries(Object.entries(inputDict).map(([k,v]) => [k, v.shape])));
